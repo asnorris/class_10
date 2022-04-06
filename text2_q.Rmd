@@ -1,0 +1,235 @@
+---
+title: 'Gov 2018: Lab 10 Latent Dirichlet allocation (LDA)'
+author:
+- 'Your name: '
+date: 'Apr 5, 2022'
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Overview
+
+This exercise is based on "Text Mining with R: A Tidy Approach" and a tutorial from Language Technology and Data Analysis Laboratory (University of Queensland).
+
+Latent Dirichlet allocation (LDA) is one of the most common algorithms for topic modeling. Without diving into the math behind the model, we can understand it as being guided by two principles.
+
+- Every document is a mixture of topics.
+- Every topic is a mixture of words.
+
+LDA is a mathematical method for estimating both of these at the same time: finding the mixture of words that is associated with each topic, while also determining the mixture of topics that describes each document. There are a number of existing implementations of this algorithm, and we’ll explore one of them in depth: `topicmodels::LDA()`.
+
+```{r}
+library(tidyverse)
+```
+
+# Question 1: Data
+
+In this lab, we will use the `AssociatedPress` dataset provided by the `topicmodels` package, as an example of a DocumentTermMatrix. This is a collection of 2246 news articles from an American news agency, mostly published around 1988.
+
+```{r}
+library(topicmodels)
+data("AssociatedPress")
+```
+
+Explore the data and report the number of documents and terms.
+
+```{r}
+
+dim(AssociatedPress)
+
+```
+
+# Question 2: Fit the LDA model
+
+Use the `LDA()` function from the `topicmodels` package, setting `k = 2` and `control = list(seed = 1234)`, to fit a two-topic LDA model with variational EM algorithm. (Alternatively, you can use Gibbs Sampling for the estimation by setting `method = "Gibbs"`.)
+
+```{r}
+
+ap_lda <- LDA(AssociatedPress, k = 2, control = list(seed = 1234))
+
+```
+
+
+# Question 3: Word-topic probabilities
+
+Fitting the model was the "easy part": the rest of the analysis will involve exploring and interpreting the model using tidying functions from the tidytext package.
+
+The `tidytext` package provides `tidy()` method, originally from the `broom` package, for extracting the per-topic-per-word probabilities, denoted $\beta$, from the model. 
+
+```{r}
+
+library(tidytext)
+ap_topics <- tidy(ap_lda, matrix = "beta")
+head(ap_topics)
+
+```
+
+## 3.1 
+
+What is the probabilities of the term `market` being generated from each of topic 1 and topic 2?
+
+```{r}
+
+ap_topics %>%
+  filter(term == "market")
+
+```
+
+## 3.2
+Find the 10 terms that are most common within each topic. Visualize the result as barplots of `beta`. Hand-label the two topics based on this result.
+
+Hint: you may use `slice_max()` from `dplyr` package.
+
+```{r}
+
+ap_topics %>%
+  filter(topic == 1) %>%
+  arrange(desc(beta)) %>%
+  slice(1:10) %>%
+  ggplot(aes(x = term, y = beta)) +
+  geom_col() 
+  
+
+ap_topics %>%
+  filter(topic == 2) %>%
+  arrange(desc(beta)) %>%
+  slice(1:10) %>%
+  ggplot(aes(x = term, y = beta)) +
+  geom_col() 
+
+```
+
+## 3.3
+As an alternative, we could consider the terms that had the *greatest difference* in $\beta$ between topic 1 and topic 2. This can be estimated based on the log ratio of the two: $\log_2 \left(\frac{\beta_2}{\beta_1}\right)$. A log ratio is useful because it makes the difference symmetrical: $\beta_2$ being twice as large leads to a log ratio of $1$, while $\beta_1$ being twice as large results in $-1$. 
+
+To constrain it to a set of especially relevant words, filter for relatively common words, such as those that have a $\beta$ greater than $1/1000$ in at least one topic. Calculate the log ratio of $\beta$ and report the 10 maximum and 10 minimum terms. Briefly discuss the results.
+
+```{r}
+
+beta_wide <- ap_topics %>%
+  mutate(topic = paste0("topic", topic)) %>%
+  pivot_wider(names_from = topic, values_from = beta) %>% 
+  filter(topic1 > .001 | topic2 > .001) %>%
+  mutate(log_ratio = log2(topic2 / topic1))
+
+# 10 terms for topic 2
+beta_wide %>% 
+  arrange(desc(log_ratio)) %>%
+  .[1:10,]
+
+# 10 terms for topic 1
+beta_wide %>% 
+  arrange(log_ratio) %>%
+  .[1:10,]
+
+```
+
+
+# Question 4: Document-topic probabilities
+
+Besides estimating each topic as a mixture of words, LDA also models each document as a mixture of topics. We can examine the per-document-per-topic probabilities, denoted as $\gamma$ ($\theta$ from the lecture slides), with the `matrix = "gamma"` argument to `tidy()`. 
+
+Use `tidy()` method to extract $\gamma$. What is the probability of the words in document 6 being generated from topic 2? Check the most common words in that document to confirm the result. 
+
+```{r}
+
+ap_docs <- tidy(ap_lda, matrix = "gamma")
+ap_docs %>%
+  filter(document == 6)
+
+tidy(AssociatedPress) %>%
+  filter(document == 6) %>%
+  arrange(desc(count))
+
+
+```
+
+# Question 5: Tuning the number of topics, $k$
+
+So far, we have been using two-topic LDA model. For parameterized models such as LDA, the number of topics $k$ is the most important parameter to define in advance. How an optimal $k$ should be selected depends on various factors. If $k$ is too small, the collection is divided into a few very general semantic contexts. If $k$ is too large, the collection is divided into too many topics of which some may overlap and others are hardly interpretable.
+
+To select an optimal number of topics, `ldatuning::FindTopicsNumber()` fit models with a range of $k$ and compute four metrics to compare the results. 
+
+Since this may take a significant amount of time, we will use a smaller subset (only 10 documents) in this exercise.
+
+Create a subset of dtm with only 10 documents and run `FindTopicsNumber()` with following arguments:
+
+- `topics = seq(from = 2, to = 15, by = 1)`: the range of number of topics to compare different models
+- `metrics = c("Griffiths2004", "CaoJuan2009", "Arun2010", "Deveaud2014")`
+- `method = "Gibbs"`: we will use Gibbs sampling to fit each model
+- `control = list(seed = 1234)`: set the seed number
+- `verbose = TRUE`: print the progress and warnings
+
+Visualize the result with `FindTopicsNumber_plot()` and briefly discuss the result.
+
+Hint: The best number of topics shows low values for `CaoJuan2009`/`Arun2010` and high values for `Griffith2004`/`Deveaud2014` (optimally, several methods should converge and show peaks and dips respectively for a certain number of topics).
+
+```{r}
+library(ldatuning)
+```
+
+# [Optional] Question 6: Alternative LDA implementations
+
+The `LDA()` function in the `topicmodels` package is only one implementation of the latent Dirichlet allocation algorithm. For example, the `mallet` package (Mimno 2013) implements a wrapper around the MALLET Java package for text classification tools, and the `tidytext` package provides tidiers for this model output as well.
+
+The `mallet` package takes a somewhat different approach to the input format. For instance, it takes non-tokenized documents and performs the tokenization itself, and requires a separate file of stopwords. This means we have to collapse the text into one string for each document before performing LDA.
+
+```{r}
+
+sub_dtm <- AssociatedPress[1:10, ]
+result <- FindTopicsNumber(
+  sub_dtm,
+  topics = seq(from = 2, to = 15, by = 1),
+  metrics = c("Griffiths2004", "CaoJuan2009", "Arun2010", "Deveaud2014"),
+  method = "Gibbs",
+  control = list(seed = 1234),
+  verbose = TRUE
+)
+
+
+FindTopicsNumber_plot(result)
+
+```
+
+
+## 6.1 Preprocess
+
+Use the following codes for preprocessing the data.
+
+```{r eval=FALSE}
+library(mallet)
+
+# create a vector with one string per chapter
+collapsed <- by_chapter_word %>%
+  anti_join(stop_words, by = "word") %>%
+  mutate(word = str_replace(word, "'", "")) %>%
+  group_by(document) %>%
+  summarize(text = paste(word, collapse = " "))
+
+# create an empty file of "stopwords"
+file.create(empty_file <- tempfile())
+docs <- mallet.import(collapsed$document, collapsed$text, empty_file)
+
+mallet_model <- MalletLDA(num.topics = 4)
+mallet_model$loadDocuments(docs)
+mallet_model$train(100)
+```
+
+## 6.2
+
+Once the model is created, we can use the `tidy()` and `augment()` functions in an almost identical way using `LDA()`. This includes extracting the probabilities of words within each topic or topics within each document.
+
+```{r eval=FALSE}
+# word-topic pairs
+tidy(mallet_model)
+
+# document-topic pairs
+tidy(mallet_model, matrix = "gamma")
+
+# column needs to be named "term" for "augment"
+term_counts <- rename(word_counts, term = word)
+augment(mallet_model, term_counts)
+```
+
+We could use ggplot2 to explore and visualize the model in the same way we did the LDA output.
